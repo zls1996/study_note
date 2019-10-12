@@ -199,3 +199,72 @@ var printThis = printColor.bind(this);
 printThis(); // blue;
 ```
 
+### new
+
+​	new命令的作用，就是执行构造函数，返回一个实例对象。
+
+```js
+var Vehicle = function () {
+    this.price = 1000;
+};
+
+var v = new Vehicle();
+console.log(v.price); // 1000;
+```
+
+​	上面代码通过new命令，让构造函数Vehicle生成一个实例对象，保存在变量v中。这个新生成的实例对象，从构造函数Vehicle得到了price属性。new命令执行时，构造函数内部的this，就代表了新生成的实例对象，this.price表示实例对象有一个price属性，值是1000.
+
+​	一个很自然的情况是，如果忘了使用new命令，直接调用构造函数会发生什么事？
+
+​	这种情况下，构造函数就变成了普通函数，并不会生成实例对象。此时构造函数中的this表示当前上下文，并造成一些不可思议的结果。
+
+```js
+var Vehicle = function() {
+    this.price = 500;
+}
+
+var v = Vehicle();
+v; //undefined
+price; //1000
+```
+
+​	为了保证构造函数必须与new命令一起使用，一个解决办法是，构造函数内部使用严格模式，即第一行加上use strict 。这样的话，直接调用构造函数就会报错。
+
+```js
+function Fubar(foo, bar) {
+    'use strict';
+    this._foo = foo;
+    this._bar = bar;
+}
+
+Fubar(); // TypeError: Cannot set property '_foo' of undefined
+```
+
+#### new命令的原理
+
+使用new命令时，它后面的函数依次执行下面的步骤：
+
+1. 创建一个空对象，作为将要返回的对象实例。
+2. 创建这个空对象的原型，指向构造函数的prototype属性
+3. 将这个空对象赋值给函数内部的this关键字
+4. 开始执行构造函数内部的代码
+
+也就是说，构造函数内部，this指向的是新生成的空对象，所有针对this的操作，都会发生在这个空对象上。构造函数之所以叫构造函数，就是说这个函数的目的，就是操作一个空对象，将其构造为所需要的样子。
+
+new命令简化的内部流程，可以用下面的代码表示：
+
+```js
+function _new(constructor, params) {
+    //将arguments构造为数组
+    var args = [].slice.call(arguments);
+    //取出构造函数
+    var constructor = args.shift();
+    //创建一个空对象
+    var context = Object.create(constructor.prototype);
+    //执行构造函数
+    var result = constructor.apply(context, args);
+    //如果返回结果是对象，就直接返回。否则返回context对象
+    return (typeof result === 'object' && result != null) ? result : context;
+}
+```
+
