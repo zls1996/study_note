@@ -224,35 +224,286 @@ Resource resource = new ClassPathResource("beans.xml");
 
 ​	回到我们常用的ApplicationContext上来，例如FileSystemXmlApplicationContext、ClassPathXmlApplicationContext以及XmlWebApplicationContext等。简单地从这些类的名字上分析，可以清楚地看到它们可以提供哪些不同的Resource读入功能，比如FileSystemXmlApplicationContext可以从文件系统载入Resource，ClassPathXmlApplicationContext可以从classpath中载入Resource，XMLWebApplicationContext可以在web容器中载入Resource等。
 
-##### BeanDefinition载入
+​	我们以FileSystemXmlApplicationContext为例，分析这个ApplicationContext是如何实现Resource定位的。
 
-​	BeanDefinition的载入过程是把用户定义好的Bean表示成IoC容器内部的数据结构，而这个容器内部的数据结构就是BeanDefinition,后面会详细介绍BeanDefinition这个数据结构。通过BeanDefinition定义的数据结构，使得IoC容器能够方便地对Bean进行管理。
+![1571130491807](C:\Users\leeson\AppData\Roaming\Typora\typora-user-images\1571130491807.png)
 
-##### BeanDefinition注册
+​	我们可以从FileSystemXmlApplicationContext的继承关系看到，FileSystemXmlApplicationContext继承了AbstractApplicationContext，因此具备了从ResourceLoader读入以Resource定义的BeanDefinition能力，AbstractApplicationContext的父类是DefaultResourceLoader。我们来看看FileSystemXmlApplicationContext的具体实现。
 
-​	这个过程是通过调用BeanDefinitionRegistry接口的实现来完成的。这个注册过程把载入过程中解析到的BeanDefinition向IoC容器中去进行注册。通过分析，我们可以看到，在IoC容器中内部将BeanDefinition注入到一个HashMap中，IoC容器就是通过这个HashMap来持有这些BeanDefinition数据的。
+```java
+
+public class FileSystemXmlApplicationContext extends AbstractXmlApplicationContext {
+
+	
+	public FileSystemXmlApplicationContext() {
+	}
+
+	public FileSystemXmlApplicationContext(ApplicationContext parent) {
+		super(parent);
+	}
+	// 这里的构造函数的configLocation包含的是BeanDefinition的文件路径
+	public FileSystemXmlApplicationContext(String configLocation) throws BeansException {
+		this(new String[] {configLocation}, true, null);
+	}
+    // 允许包含多个beanDefinition路径
+	public FileSystemXmlApplicationContext(String... configLocations) throws BeansException {
+		this(configLocations, true, null);
+	}
+    // 还允许指定父ApplicationContext(双亲)
+	public FileSystemXmlApplicationContext(String[] configLocations, ApplicationContext parent) throws BeansException {
+		this(configLocations, true, parent);
+	}
+
+	public FileSystemXmlApplicationContext(String[] configLocations, boolean refresh) throws BeansException {
+		this(configLocations, refresh, null);
+	}
+	
+    // 在对象的初始化过程中，调用refresh函数载入BeanDefinition，这里的refresh()函数就是	ApplicationContext的启动过程
+	public FileSystemXmlApplicationContext(String[] configLocations, boolean refresh, ApplicationContext parent)
+			throws BeansException {
+
+		super(parent);
+		setConfigLocations(configLocations);
+		if (refresh) {
+			refresh();
+		}
+	}
+	
+    // 这是应用于文件系统中Resource的实现，通过构造一个FileSystemResource来得到一个在文件系统中定位的
+   	// BeanDefinition。这里的getResourceByPath采用了模板模式，具体的定位实现是由于各个子类来实现的。
+	@Override
+	protected Resource getResourceByPath(String path) {
+		if (path != null && path.startsWith("/")) {
+			path = path.substring(1);
+		}
+		return new FileSystemResource(path);
+	}
+
+}
+
+```
+
+​	我们可以看到，关于IoC容器的载入功能，在这里并没有被涉及到，因为它继承了AbstractXmlApplicationContext，关于IoC容器的过程，都是在refresh()方法中实现的，这里的refresh非常重要，使我们分析容器初始化过程的一个重要入口，这里的refresh调用时在FileSystemXmlBeanFactory的构造函数中启动的。
+
+
+
+##### BeanDefinition的载入和解析
+
+​	在完成了对代表BeanDefinition的Resource定位分析之后，我们需要来了解整个BeanDefinition信息的载入过程。这个载入过程，就是把定义的BeanDefinition在IoC容器中转换成一个Spring内部的数据结构(BeanDefinition)的过程。
+
+​	我们再从FileSystemApplicationContext入手，看看IoC容器是怎样完成BeanDefinition载入的。
+
+```java
+public FileSystemXmlApplicationContext(String[] configLocations, boolean refresh, ApplicationContext parent)
+			throws BeansException {
+
+		super(parent);
+		setConfigLocations(configLocations);
+		if (refresh) {
+			refresh();
+		}
+	}
+```
+
+refresh()方法在AbstractApplicationContext中实现。AbstractApplicationContext详细地描述了整个ApplicationContext的启动过程，比如BeanFactory的更新，MessageSource以及PostProcessor的注册等等。AbstractApplicationContext更像是对ApplicationContext进行初始化模板或执行提纲，这个执行过程为Bean的生命周期管理提供了条件。
+
+我们来直接看AbstractApplicationContext的refresh执行流程。
+
+```java
+public void refresh() throws BeansException, IllegalStateException {
+		synchronized (this.startupShutdownMonitor) {
+			// Prepare this context for refreshing.
+			prepareRefresh();
+
+			// 在子类中启动refreshBeanFactory
+			ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+			// Prepare the bean factory for use in this context.
+			prepareBeanFactory(beanFactory);
+
+			try {
+				// 设置BeanFactory的后置处理
+				postProcessBeanFactory(beanFactory);
+
+				// 调用BeanFactory的后处理器，这些后处理器是在
+                // Bean定义中向容器注册的
+				invokeBeanFactoryPostProcessors(beanFactory);
+
+				// 注册Bean的后置处理器，在Bean创建过程中调用
+				registerBeanPostProcessors(beanFactory);
+
+				// 对上下文消息进行初始化
+				initMessageSource();
+
+				// 初始化上下文中的事件机制
+				initApplicationEventMulticaster();
+
+				// 初始化其他的特殊bean
+				onRefresh();
+
+				// 检查监听Bean并且将这些Bean向容器注册
+				registerListeners();
+
+				// 实例化所有单例
+				finishBeanFactoryInitialization(beanFactory);
+
+				// 发布容器事件，结束refresh过程
+				finishRefresh();
+			}
+
+			catch (BeansException ex) {
+				if (logger.isWarnEnabled()) {
+					logger.warn("Exception encountered during context initialization - " +
+							"cancelling refresh attempt: " + ex);
+				}
+
+				// Destroy already created singletons to avoid dangling resources.
+				destroyBeans();
+
+				// Reset 'active' flag.
+				cancelRefresh(ex);
+
+				// Propagate exception to caller.
+				throw ex;
+			}
+
+			finally {
+				// Reset common introspection caches in Spring's core, since we
+				// might not ever need metadata for singleton beans anymore...
+				resetCommonCaches();
+			}
+		}
+	}
+```
+
+#### ApplicationContext和Bean的初始化和销毁
+
+​	对于BeanFactory和ApplicationContext，容器自身也有一个初始化和销毁关闭的过程。对于ApplicationContext启动的过程是在AbstractApplicationContext中实现的。在使用应用上下文时需要做一些准备工作，这些准备工作在prepareBeanFactory()方法中实现。在这个方法中，为容器配置了ClassLoader、PropertyEditor以及BeanPostProcessor等，从而为容器的启动做好了必要的准备工作。
+
+```java
+protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+		// Tell the internal bean factory to use the context's class loader etc.
+		beanFactory.setBeanClassLoader(getClassLoader());
+		beanFactory.setBeanExpressionResolver(new StandardBeanExpressionResolver(beanFactory.getBeanClassLoader()));
+		beanFactory.addPropertyEditorRegistrar(new ResourceEditorRegistrar(this, getEnvironment()));
+
+		// Configure the bean factory with context callbacks.
+		beanFactory.addBeanPostProcessor(new ApplicationContextAwareProcessor(this));
+		beanFactory.ignoreDependencyInterface(EnvironmentAware.class);
+		beanFactory.ignoreDependencyInterface(EmbeddedValueResolverAware.class);
+		beanFactory.ignoreDependencyInterface(ResourceLoaderAware.class);
+		beanFactory.ignoreDependencyInterface(ApplicationEventPublisherAware.class);
+		beanFactory.ignoreDependencyInterface(MessageSourceAware.class);
+		beanFactory.ignoreDependencyInterface(ApplicationContextAware.class);
+
+		// BeanFactory interface not registered as resolvable type in a plain factory.
+		// MessageSource registered (and found for autowiring) as a bean.
+		beanFactory.registerResolvableDependency(BeanFactory.class, beanFactory);
+		beanFactory.registerResolvableDependency(ResourceLoader.class, this);
+		beanFactory.registerResolvableDependency(ApplicationEventPublisher.class, this);
+		beanFactory.registerResolvableDependency(ApplicationContext.class, this);
+
+		// Register early post-processor for detecting inner beans as ApplicationListeners.
+		beanFactory.addBeanPostProcessor(new ApplicationListenerDetector(this));
+
+		// Detect a LoadTimeWeaver and prepare for weaving, if found.
+		if (beanFactory.containsBean(LOAD_TIME_WEAVER_BEAN_NAME)) {
+			beanFactory.addBeanPostProcessor(new LoadTimeWeaverAwareProcessor(beanFactory));
+			// Set a temporary ClassLoader for type matching.
+			beanFactory.setTempClassLoader(new ContextTypeMatchClassLoader(beanFactory.getBeanClassLoader()));
+		}
+
+		// Register default environment beans.
+		if (!beanFactory.containsLocalBean(ENVIRONMENT_BEAN_NAME)) {
+			beanFactory.registerSingleton(ENVIRONMENT_BEAN_NAME, getEnvironment());
+		}
+		if (!beanFactory.containsLocalBean(SYSTEM_PROPERTIES_BEAN_NAME)) {
+			beanFactory.registerSingleton(SYSTEM_PROPERTIES_BEAN_NAME, getEnvironment().getSystemProperties());
+		}
+		if (!beanFactory.containsLocalBean(SYSTEM_ENVIRONMENT_BEAN_NAME)) {
+			beanFactory.registerSingleton(SYSTEM_ENVIRONMENT_BEAN_NAME, getEnvironment().getSystemEnvironment());
+		}
+	}
+```
+
+​	同样，在容器关闭时，也需要完成一系列的工作，这些工作在doClose()方法中完成。在这个方法中，先发出容器关闭的信号，然后将Bean逐个关闭，最后关闭容器本身。
+
+```java
+protected void doClose() {
+		if (this.active.get() && this.closed.compareAndSet(false, true)) {
+			if (logger.isInfoEnabled()) {
+				logger.info("Closing " + this);
+			}
+
+			LiveBeansView.unregisterApplicationContext(this);
+
+			try {
+				// Publish shutdown event.
+				publishEvent(new ContextClosedEvent(this));
+			}
+			catch (Throwable ex) {
+				logger.warn("Exception thrown from ApplicationListener handling ContextClosedEvent", ex);
+			}
+
+			// Stop all Lifecycle beans, to avoid delays during individual destruction.
+			if (this.lifecycleProcessor != null) {
+				try {
+					this.lifecycleProcessor.onClose();
+				}
+				catch (Throwable ex) {
+					logger.warn("Exception thrown from LifecycleProcessor on context close", ex);
+				}
+			}
+
+			// Destroy all cached singletons in the context's BeanFactory.
+			destroyBeans();
+
+			// Close the state of this context itself.
+			closeBeanFactory();
+
+			// Let subclasses do some final clean-up if they wish...
+			onClose();
+
+			this.active.set(false);
+		}
+	}
+```
+
+​	容器的实现是通过IoC管理bean的生命周期来实现的。Spring IoC在对Bean的生命周期进行管理时提供了Bean生命周期各个时间点的回调。
+
+​	Bean的生命周期为：
+
+- Bean实例的创建
+- 为Bean实例设置属性
+- 调用Bean的初始化方法
+- 应用可以通过IoC容器使用Bean
+- 当容器关闭时，调用Bean的销毁方法
+
+
+
+​	Bean的初始化方法在initializeBean方法中实现：
+
+​	// TODO
 
 
 
 
 
+在调用Bean的初始化方法之前，会调用一系列的aware接口实现，把相关的BeanName，BeanClassLoader，以及BeanFactory注入到Bean中去。接着看对invokeInitMethods的调用，这时会看到启动afterPropertySet的过程，当然，需要Bean实现InitializingBean接口，这里同样是对Bean的回调。
+
+// TODO
 
 
 
 
 
+​	最后，还会看到判断Bean是否配置有initMethod,如果有，那么通过invokeCustomInitMethod方法来直接调用，最终完成Bean的初始化。
+
+​	
 
 
 
-
-
-
-
-
-
-
-
-
+与Bean初始化类似，当容器关闭时，可以看到Bean销毁方法的调用。Bean销毁过程
 
 
 
